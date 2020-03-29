@@ -79,11 +79,22 @@ classdef NaturalNeighborInterpolant < handle
             %
             %   OPTIONAL INPUT PARAMETERS ((Name, Value)-Pairs):
             %
+            %       - {'GhostPointMethod', ghostMethod}: The method used
+            %       for determining the position of the ghost points used
+            %       for natural neighbor extrapolation. The choice of
+            %       method will also dictacte the type of gradient
+            %       estimation used.
+            %           - ghostMethod:  'circle'
+            %
             %       - {'GhostPoints', GP}: Allows the user to explicitly
             %       specify the chost points used for extrapolation.
             %       Default is the dense circumcircle of the bounding box
-            %       of the data point with a radius increase factor x10
+            %       of the data point with a radius increase factor x2
             %           - GP:   #GPx2 list of ghost point coordinates
+            %
+            %       - {'GhostPointEdgeFactor', GPe}: The edge length
+            %       increase factor for edge based ghost point construction
+            %           - GPe: {1}
             %
             %       - {'GhostPointRadusFactor', GPr}: The radius increase
             %       factor of the ghost point circle from the circumcircle
@@ -94,8 +105,12 @@ classdef NaturalNeighborInterpolant < handle
             %           - GPn: { min(10*numel(Xp), 5000) }
             %
             %       - {'Gradients', DVp}: The analytic gradients of the
-            %       data point function:
+            %       data point function
             %           - DVp: #Px#Vx2 array
+            %
+            %       - {'Hessians', HVp}: The analytic Hessians of the data
+            %       point function
+            %           - HVp: #Px#Vx4 array
             %
             %       - {'GradientEstimation', gradType}: The method to use
             %       for gradient estimation
@@ -132,10 +147,13 @@ classdef NaturalNeighborInterpolant < handle
             
             % Default option values
             GP = [];
+            ghostMethod = 'circle';
             GPr = 2;
             GPn = min( 10*numel(Xp), 2000 );
             DVp = [];
+            HVp = [];
             gradientSupplied = false;
+            hessianSupplied = false;
             gradType = 'direct';
             dispGrad = true;
             dispInterp = true;
@@ -152,6 +170,18 @@ classdef NaturalNeighborInterpolant < handle
                     GP = varargin{i+1};
                     validateattributes(GP, {'numeric'}, ...
                         {'2d', 'ncols', 2, 'finite', 'nonnan', 'real'});
+                end
+                if ~isempty(regexp(varargin{i}, ...
+                        '^[Gg]host[Pp]oint[Mm]ethod', 'match'))
+                    ghostMethod = lower(varargin{i+1});
+                    validateattributes(ghostMethod, {'char'}, ...
+                        {'scalartext'});
+                end
+                if ~isempty(regexp(varargin{i}, ...
+                        '^[Gg]host[Pp]oint[Ee]dge[Ff]actor', 'match'))
+                    GPe = varargin{i+1};
+                    validateattributes(GPe, {'numeric'}, ...
+                        {'scalar', 'positive', 'real', 'finite'});
                 end
                 if ~isempty(regexp(varargin{i}, ...
                         '^[Gg]host[Pp]oint[Rr]adius[Ff]actor', 'match'))
@@ -177,6 +207,14 @@ classdef NaturalNeighborInterpolant < handle
                         error('Gradient input is improperly sized');
                     end
                     gradientSupplied = true;
+                end
+                if ~isempty(regexp(varargin{i}, ...
+                        '^[Hh]essians', 'match'))
+                    HVp = varargin{i+1};
+                    if ~isequal(size(HVp), [numel(Xp) size(Vp,2) 4])
+                        error('Hessian input is improperly sized');
+                    end
+                    hessianSupplied = true;
                 end
                 if ~isempty(regexp(varargin{i}, ...
                         '^[Gg]radient[Ee]stimation', 'match'))
@@ -206,32 +244,10 @@ classdef NaturalNeighborInterpolant < handle
             % Ghost Point Construction
             %--------------------------------------------------------------
             
-            % The bounding box of the input data points
-            BBx = [ min(Xp) max(Xp) ]; BBy = [ min(Yp) max(Yp) ];
+            if ~isempty(GP), ghostMethod = 'custom'; end
             
-            % The center of the circumcircle of the bounding box
-            BBCc = [ (min(Xp)+diff(BBx)/2) (min(Yp)+diff(BBy)/2) ];
-            
-            % The radius of the circumcircle of the bounding box
-            BBCr = sqrt( diff(BBx)^2 + diff(BBy)^2 ) / 2;
-            BBCr = GPr .* BBCr; % Increase radius 
-            
-            % Calculate the locations of the ghost points
-            if isempty(GP)
-                
-                theta = linspace( 0, 2*pi, GPn+1 )';
-                theta = theta(1:(end-1));
-                GP = BBCr .* [ cos(theta) sin(theta) ] + BBCc;
-                
-            end
-            
-            % Check that the convex hull of the ghost points contains all
-            % input data points
-            GPCH = GP(convhull(GP), :);
-            if any( ~inpolygon( Xp, Yp, GPCH(:,1), GPCH(:,2) ) )
-                error(['Some data points are not contained within' ...
-                    ' the convex hull of the ghost points']);
-            end
+            [GP, GPCH] = this.ghostPointConstruction( Xp, Yp, ...
+                ghostMethod, GP, GPe, GPr, GPn );
             
             this.Points = [ Xp Yp; GP ];
             
