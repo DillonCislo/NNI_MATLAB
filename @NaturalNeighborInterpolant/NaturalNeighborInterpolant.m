@@ -41,6 +41,10 @@ classdef NaturalNeighborInterpolant < handle
         % input and ghost points
         DataGrad
         
+        % (#P+#GP)x#Vx3 array. Holds the Hessian data of the
+        % input and ghost points
+        DataHess
+        
         % The 'Delta' parameter of each face of the extended Delaunay
         % triangulation.  Equal to twice the signed area of the face
         fDelta
@@ -110,11 +114,16 @@ classdef NaturalNeighborInterpolant < handle
             %
             %       - {'Hessians', HVp}: The analytic Hessians of the data
             %       point function
-            %           - HVp: #Px#Vx4 array
+            %           - HVp: #Px#Vx3 array
             %
             %       - {'GradientEstimation', gradType}: The method to use
             %       for gradient estimation
             %           - gradType: 'Direct'
+            %
+            %       - {'GradIterAlpha', iterAlpha}: The relative importance
+            %       of the two least-squares subproblems in the iterative
+            %       form of Sibson's method for gradient estimation
+            %           - iterAlpha: 0.001
             %
             %       - {'DisplayGradProgress', dispGrad}: If true
             %       discrete gradient estimation progress will be displayed
@@ -148,6 +157,7 @@ classdef NaturalNeighborInterpolant < handle
             % Default option values
             GP = [];
             ghostMethod = 'circle';
+            GPe = 1;
             GPr = 2;
             GPn = min( 10*numel(Xp), 2000 );
             DVp = [];
@@ -155,6 +165,7 @@ classdef NaturalNeighborInterpolant < handle
             gradientSupplied = false;
             hessianSupplied = false;
             gradType = 'direct';
+            iterAlpha = 0.001;
             dispGrad = true;
             dispInterp = true;
             
@@ -211,7 +222,7 @@ classdef NaturalNeighborInterpolant < handle
                 if ~isempty(regexp(varargin{i}, ...
                         '^[Hh]essians', 'match'))
                     HVp = varargin{i+1};
-                    if ~isequal(size(HVp), [numel(Xp) size(Vp,2) 4])
+                    if ~isequal(size(HVp), [numel(Xp) size(Vp,2) 3])
                         error('Hessian input is improperly sized');
                     end
                     hessianSupplied = true;
@@ -220,6 +231,12 @@ classdef NaturalNeighborInterpolant < handle
                         '^[Gg]radient[Ee]stimation', 'match'))
                     gradType = lower(varargin{i+1});
                     validateattributes(gradType, {'char'}, {'scalartext'});
+                end
+                if ~isempty(regexp(varargin{i}, ...
+                        '^[Gg]rad[Ii]ter[Aa]lpha', 'match'))
+                    iterAlpha = varargin{i+1};
+                    validateattributes(iterAlpha, {'numeric'}, ...
+                        {'scalar', 'real', 'finite', '<=', 1, '>=' 0});
                 end
                 if ~isempty(regexp(varargin{i}, ...
                         '^[Dd]isplay[Gg]rad[Pp]rogress', 'match'))
@@ -244,20 +261,36 @@ classdef NaturalNeighborInterpolant < handle
             % Ghost Point Construction
             %--------------------------------------------------------------
             
-            if ~isempty(GP), ghostMethod = 'custom'; end
+            if ~isempty(GP)
+                ghostMethod = 'custom';
+                GPn = size(GP,1);
+            end
             
-            [GP, GPCH] = this.ghostPointConstruction( Xp, Yp, ...
+            [GP, ~] = this.ghostPointConstruction( Xp, Yp, ...
                 ghostMethod, GP, GPe, GPr, GPn );
+            
+            GPn = size(GP,1);
             
             this.Points = [ Xp Yp; GP ];
             
             %--------------------------------------------------------------
-            % Calculate 'Delta' Parameter
+            % Build Delaunay Triangulation/Calculate 'Delta' Parameter
             %--------------------------------------------------------------
             
+            % Build triangulation
             this.DelTri = delaunayTriangulation( this.Points );
             this.Faces = this.DelTri.ConnectivityList;
             this.Edges = this.DelTri.edges;
+            
+            % Determine convex hull
+            DTCH = this.DelTri.convexHull;
+            DTCH(end, :) = [];
+            
+            % Check that the convex hull only contains ghost points
+            assert( all( DTCH > numel(Xp) ), ...
+                'Extended convex hull contains true data points!');
+            
+            this.ConvexHull = this.Points(DTCH(1:(end-1)), :);
             
             % The x-coordinates of the vertices of each face
             fX = reshape( this.Points(this.Faces,1), size(this.Faces) );
@@ -268,6 +301,94 @@ classdef NaturalNeighborInterpolant < handle
             this.fDelta = this.calcDelta( fX, fY );
             
             %--------------------------------------------------------------
+            % Gradient Estimation
+            %--------------------------------------------------------------
+            
+            % The function values for non-ghost points must be set prior to
+            % gradient estimation
+            this.Values = [ Vp; zeros([GPn size(Vp,2)]) ];
+            
+            if gradientSupplied
+                
+                if hessianSupplied
+                    
+                    % Set analytic derivatives
+                    DataGrad = cat( 1, DVp, zeros([GPn size(Vp,2) 2]) );
+                    DataHess = cat( 1, HVp, zeros([GPn size(Vp,2) 2]) );
+                    
+                else
+                    
+                    % Estimate Hessians for all points within the
+                    % convex hull
+                    if dispGrad, fprintf('Estimating gradients: '); end
+                    
+                    if strcmp( gradType, 'direct' )
+                        
+                        [DataGrad, DataHess] = ...
+                            this.gradientEstimationDirect( ...
+                            numel(Xp), DVp );
+                        
+                    elseif strcmp( gradType, 'sibson' )
+                        
+                        [DataGrad, DataHess] = ...
+                            this.gradientEstimationSibson( ...
+                            numel(Xp), iterAlpha, DVp );
+                        
+                    else
+                        
+                        error(['Invalid gradient estimation ' ...
+                            'method supplied!']);
+                        
+                    end
+                    
+                end
+                
+            else
+                
+                if hessianSupplied
+                    
+                    error(['Gradient estimation from analytic ' ...
+                        'Hessian data is not supported!']);
+                    
+                else
+                    
+                    % Estimate Hessians for all points within the
+                    % convex hull
+                    if dispGrad, fprintf('Estimating gradients: '); end
+                    
+                    if strcmp( gradType, 'direct' )
+                        
+                        [DataGrad, DataHess] = ...
+                            this.gradientEstimationDirect(numel(Xp));
+                        
+                    elseif strcmp( gradType, 'sibson' )
+                        
+                        [DataGrad, DataHess] = ...
+                            this.gradientEstimationSibson( ...
+                            numel(Xp), iterAlpha );
+                        
+                    else
+                        
+                        error(['Invalid gradient estimation ' ...
+                            'method supplied!']);
+                        
+                    end
+                    
+                end
+                
+            end
+            
+            % Set gradients/Hessian for non-ghost points
+            this.DataGrad = DataGrad;
+            this.DataHess = DataHess;
+            
+            % Validate gradients/Hessian
+            validateattributes( this.DataGrad, {'numeric'}, ...
+                {'finite', 'nonnan', 'real'} );
+            validateattributes( this.DataHess, {'numeric'}, ...
+                {'finite', 'nonnan', 'real'} );
+                        
+            %--------------------------------------------------------------
             % Ghost Point Value Handling
             %--------------------------------------------------------------
             % Values assigned to ghost points are just the weighted average
@@ -276,109 +397,7 @@ classdef NaturalNeighborInterpolant < handle
             % neighbors.  If analytic gradients were supplied gradient
             % values are averaged similarly.
             
-            % Check that no extraneous ghost points were provided
-            DTCH = this.Points( this.DelTri.convexHull, : );
-            if ~isequal(unique(DTCH, 'rows'), unique(GPCH, 'rows'))
-                error(['Extraneous ghost points supplied off of' ...
-                    ' the convex hull']);
-            end
-            
-            this.ConvexHull = DTCH(1:(end-1),:);
-            
-            % Vertex IDs defining edges in the Delaunay triangulation
-            eIDx = edges(this.DelTri);
-            
-            % The vertex IDs of the ghost points
-            GPIDx = (numel(Xp)+1):size(this.Points, 1);
-            
-            % Remove all edges connecting two ghost points from the list
-            GP2GP = all( ismember(eIDx, GPIDx), 2 );
-            eIDx(GP2GP, :) = [];
-            
-            Values = [ Vp; zeros([GPn size(Vp,2)]) ];
-            if gradientSupplied
-                DataGrad = cat( 1, DVp, ...
-                    zeros([GPn size(Vp,2) 2]) );
-            end
-            
-            for i = GPIDx
-                
-                % Find the edges containing the current ghost point
-                GPinE = any( eIDx == i, 2 );
-                
-                % Find the vertex IDs of the natural neighbors
-                nnIDx = eIDx(GPinE, :); nnIDx(:);
-                nnIDx( nnIDx == i ) = [];
-    
-                % Calculate the normalized inverse edge lengths
-                edgeWeights = this.Points(nnIDx,:) - this.Points(i,:);
-                edgeWeights = 1 ./ sqrt( sum( edgeWeights.^2, 2 ) );
-                edgeWeights = edgeWeights ./ sum(edgeWeights);
-                
-                % Calculate average values and update values list
-                VGP = sum(edgeWeights .* Values(nnIDx,:), 1);
-                Values(i,:) = VGP;
-                
-                % Calculate average gradients and update gradients list
-                if gradientSupplied
-                    DVGP = sum(edgeWeights .* DataGrad(nnIDx,:,:), 1);
-                    DataGrad(i,:,:) = DVGP;
-                end
-                    
-            end
-            
-            this.Values = Values;
-            if gradientSupplied
-                this.DataGrad = DataGrad;
-            end
-
-            %--------------------------------------------------------------
-            % Gradient Estimation
-            %--------------------------------------------------------------
-            % An implementation of Sibson's least-squares gradient
-            % fitting method
-            
-            if ~gradientSupplied
-                
-                % Estimate gradients for all points within the convex hull
-                if dispGrad, fprintf('Estimating gradients: '); end
-                
-                if strcmp( gradType, 'direct' )
-                    DataGrad = this.gradientEstimationDirect(numel(Xp));
-                elseif strcmp( gradType, 'sibson' )
-                    DataGrad = this.gradientEstimationSibson(numel(Xp));
-                else
-                    error('Invalid gradient estimation method supplied!');
-                end
-                
-                % Average gradients onto the ghost points -----------------
-                for i = GPIDx
-                    
-                    % Find the edges containing the current ghost point
-                    GPinE = any( eIDx == i, 2 );
-                    
-                    % Find the vertex IDs of the natural neighbors
-                    nnIDx = eIDx(GPinE, :); nnIDx(:);
-                    nnIDx( nnIDx == i ) = [];
-                    
-                    % Calculate the normalized inverse edge lengths
-                    edgeWeights = this.Points(nnIDx,:) - this.Points(i,:);
-                    edgeWeights = 1 ./ sqrt( sum( edgeWeights.^2, 2 ) );
-                    edgeWeights = edgeWeights ./ sum(edgeWeights);
-                    
-                    % Calculate average gradients and update gradients list
-                    DVGP = sum(edgeWeights .* DataGrad(nnIDx,:,:), 1);
-                    DataGrad(i,:,:) = DVGP;
-                    
-                end
-                
-                this.DataGrad = DataGrad;
-                
-            end
-            
-            % Validate gradients
-            validateattributes( this.DataGrad, {'numeric'}, ...
-                {'finite', 'nonnan', 'real'} );
+            this.ghostPointValueHandling( numel(Xp), ghostMethod );
             
         end
         
