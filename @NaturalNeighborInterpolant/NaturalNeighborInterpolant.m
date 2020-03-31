@@ -314,7 +314,7 @@ classdef NaturalNeighborInterpolant < handle
                     
                     % Set analytic derivatives
                     DataGrad = cat( 1, DVp, zeros([GPn size(Vp,2) 2]) );
-                    DataHess = cat( 1, HVp, zeros([GPn size(Vp,2) 2]) );
+                    DataHess = cat( 1, HVp, zeros([GPn size(Vp,2) 3]) );
                     
                 else
                     
