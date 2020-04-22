@@ -148,7 +148,7 @@ for i = 1:numel(Xq)
     nnTri_X = reshape( vertex(nnPoly_E, 1), size(nnPoly_E) );
     nnTri_X = [ repmat(Xq(i), size(nnTri_X, 1), 1) nnTri_X ];
     
-    % The x-coordinates of the triangles of the virtual Delaunay
+    % The y-coordinates of the triangles of the virtual Delaunay
     % triangulation containing the query point
     nnTri_Y = reshape( vertex(nnPoly_E, 2), size(nnPoly_E) );
     nnTri_Y = [ repmat(Yq(i), size(nnTri_Y, 1), 1) nnTri_Y ];

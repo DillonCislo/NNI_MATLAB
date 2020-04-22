@@ -111,7 +111,7 @@ if isempty(DVp)
             % Update the output Hessian array
             DataHess(i,j,1) = g(3);
             DataHess(i,j,2) = g(4);
-            DataHess(i,j,2) = g(5);
+            DataHess(i,j,3) = g(5);
             
         end
         
@@ -163,7 +163,7 @@ else
             
             taylorPol = this.Values(i,j) + ...
                 DataGrad(i,j,1) .* X + DataGrad(i,j,2) .* Y;
-            taylorPol = repmat( taylorPol, numel(curNN), 1 );
+            % taylorPol = repmat( taylorPol, numel(curNN), 1 );
             
             % The least-squares RHS vector
             B = invL .* ( this.Values(curNN, j) - taylorPol );
@@ -174,7 +174,7 @@ else
             % Update the output Hessian array
             DataHess(i,j,1) = g(1);
             DataHess(i,j,2) = g(2);
-            DataHess(i,j,2) = g(3);
+            DataHess(i,j,3) = g(3);
             
         end
         

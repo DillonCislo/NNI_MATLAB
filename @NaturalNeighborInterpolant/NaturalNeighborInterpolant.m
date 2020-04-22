@@ -100,7 +100,7 @@ classdef NaturalNeighborInterpolant < handle
             %       increase factor for edge based ghost point construction
             %           - GPe: {1}
             %
-            %       - {'GhostPointRadusFactor', GPr}: The radius increase
+            %       - {'GhostPointRadiusFactor', GPr}: The radius increase
             %       factor of the ghost point circle from the circumcircle
             %       of the data point bounding box
             %           - GPr: {2}
@@ -284,7 +284,7 @@ classdef NaturalNeighborInterpolant < handle
             
             % Determine convex hull
             DTCH = this.DelTri.convexHull;
-            DTCH(end, :) = [];
+            % DTCH(end, :) = [];
             
             % Check that the convex hull only contains ghost points
             assert( all( DTCH > numel(Xp) ), ...
